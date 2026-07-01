@@ -139,3 +139,23 @@
 
 (defn with-root-relationship [pkg rel]
   (ensure-entry pkg root-rels-path (relationships-xml [rel])))
+
+(defn valid-package? [pkg]
+  (and (map? pkg)
+       (map? (:ooxml/entries pkg))
+       (contains? #{:pptx :docx :xlsx :opc nil} (:ooxml/kind pkg))
+       (every? string? (keys (:ooxml/entries pkg)))))
+
+(defn valid-relationship? [rel]
+  (and (map? rel)
+       (string? (:id rel))
+       (string? (:type rel))
+       (string? (:target rel))))
+
+(defn valid-content-type? [item]
+  (and (map? item)
+       (contains? #{:default :override} (:kind item))
+       (string? (:content-type item))
+       (case (:kind item)
+         :default (string? (:extension item))
+         :override (string? (:part-name item)))))
