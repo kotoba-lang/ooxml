@@ -8,7 +8,10 @@
   (is (= :xlsx (ooxml/kind (ooxml/package {"xl/workbook.xml" "<workbook/>"}))))
   (is (= :opc (ooxml/kind (ooxml/package {"custom/item.xml" "<x/>"}))))
   (is (= :custom (ooxml/kind (ooxml/package {"custom/item.xml" "<x/>"} {:kind :custom}))))
-  (is (= {"custom/item.xml" "<x/>"} (ooxml/entries (ooxml/package {"custom/item.xml" "<x/>"})))))
+  (is (= {"custom/item.xml" "<x/>"} (ooxml/entries (ooxml/package {"custom/item.xml" "<x/>"}))))
+  (is (= :pptx (ooxml/package-kind {"ppt/slides/slide1.xml" ""})))
+  (is (= :xlsx (ooxml/package-kind {"xl/worksheets/sheet1.xml" ""})))
+  (is (= :docx (ooxml/package-kind {"word/document.xml" ""}))))
 
 (deftest renders-rels-and-content-types
   (is (= "ppt/_rels/presentation.xml.rels" (ooxml/rels-path-for "ppt/presentation.xml")))
@@ -18,8 +21,14 @@
   (is (re-find #"TargetMode=\"External\""
                (ooxml/relationship-xml
                 (ooxml/relationship {:id "rIdExt" :type "http://example.test/rel" :target "https://example.test" :target-mode "External"}))))
+  (is (= "<Override PartName=\"/ppt/presentation.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml\"/>"
+         (ooxml/content-type-xml (ooxml/override-content-type "/ppt/presentation.xml" (:pptx ooxml/content-types)))))
   (is (re-find #"\[Content_Types\]"
-               (str ooxml/content-types-path))))
+               (str ooxml/content-types-path)))
+  (is (= "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"></Relationships>"
+         (ooxml/relationships-xml [])))
+  (is (= "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"></Types>"
+         (ooxml/content-types-xml []))))
 
 (deftest sorts-office-parts-naturally
   (is (= ["ppt/slides/slide1.xml" "ppt/slides/slide2.xml" "ppt/slides/slide10.xml"]
@@ -27,7 +36,12 @@
                (ooxml/office-parts {"ppt/slides/slide10.xml" ""
                                      "ppt/slides/slide2.xml" ""
                                      "ppt/slides/slide1.xml" ""
-                                     "ppt/theme/theme1.xml" ""})))))
+                                     "ppt/theme/theme1.xml" ""}))))
+  (is (= ["word/document.xml"]
+         (mapv first (ooxml/office-parts {"word/document.xml" "" "word/styles.xml" ""}))))
+  (is (= [] (ooxml/office-parts {"custom/item.xml" ""})))
+  (is (not (ooxml/office-part? "ppt/theme/theme1.xml")))
+  (is (= ["custom/item.xml" 0] (ooxml/part-sort-key "custom/item.xml"))))
 
 (deftest appends-content-types-and-root-relationships
   (is (re-find #"Default Extension=\"edn\""
@@ -45,10 +59,27 @@
                                      :target "ocz/causal.edn"}))))
   (is (re-find #"Default Extension=\"json\""
                (ooxml/ensure-content-type-extension "<Types/>" "json" "application/json")))
+  (is (re-find #"Default Extension=\"yaml\""
+               (ooxml/ensure-content-type-extension "<Types></Types>" "yaml" "application/yaml")))
+  (is (re-find #"rIdBlank"
+               (ooxml/ensure-root-relationship
+                ""
+                (ooxml/relationship {:id "rIdBlank" :type "http://example.test/rel" :target "x"}))))
   (is (re-find #"rId2"
                (ooxml/ensure-root-relationship
                 "<Relationships></Relationships>"
-                (ooxml/relationship {:id "rId2" :type "http://example.test/rel" :target "x"})))))
+                (ooxml/relationship {:id "rId2" :type "http://example.test/rel" :target "x"}))))
+  (is (= "<Types><Default Extension=\"edn\" ContentType=\"application/edn\"/></Types>"
+         (ooxml/ensure-content-type-extension
+          "<Types><Default Extension=\"edn\" ContentType=\"application/edn\"/></Types>"
+          "edn"
+          "application/json")))
+  (is (= "<no-types/>" (ooxml/ensure-content-type-extension "<no-types/>" "edn" "application/edn")))
+  (is (= "<Relationships><Relationship Id=\"rId1\" Type=\"t\" Target=\"x\"/></Relationships>"
+         (ooxml/ensure-root-relationship
+          "<Relationships><Relationship Id=\"rId1\" Type=\"t\" Target=\"x\"/></Relationships>"
+          (ooxml/relationship {:id "rId1" :type "other" :target "other"}))))
+  (is (= "<no-rels/>" (ooxml/ensure-root-relationship "<no-rels/>" (ooxml/relationship {:id "rId1" :type "t" :target "x"})))))
 
 (deftest validates-edn-models
   (let [pkg (ooxml/package {"ppt/presentation.xml" "<p:presentation/>"})
@@ -59,5 +90,10 @@
     (is (ooxml/valid-content-type? ct))
     (is (ooxml/valid-content-type? (ooxml/override-content-type "/ppt/presentation.xml" (:pptx ooxml/content-types))))
     (is (not (ooxml/valid-content-type? {:kind :default :content-type "application/xml"})))
+    (is (not (ooxml/valid-content-type? {:kind :override :content-type "application/xml"})))
+    (is (not (ooxml/valid-content-type? {:kind :other :content-type "application/xml"})))
     (is (not (ooxml/valid-relationship? {:id "rId1"})))
+    (is (not (ooxml/valid-package? {:ooxml/entries [] :ooxml/kind :pptx})))
+    (is (not (ooxml/valid-package? {:ooxml/entries {1 ""} :ooxml/kind :pptx})))
+    (is (not (ooxml/valid-package? {:ooxml/entries {} :ooxml/kind :bad})))
     (is (ooxml/valid-package? (ooxml/with-root-relationship pkg rel)))))
