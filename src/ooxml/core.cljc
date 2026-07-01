@@ -8,6 +8,8 @@
 (def relationship-ns "http://schemas.openxmlformats.org/package/2006/relationships")
 (def content-types-ns "http://schemas.openxmlformats.org/package/2006/content-types")
 (def office-document-rel "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument")
+(def office-part-pattern
+  #"^(ppt/slides/slide\d+|xl/worksheets/sheet\d+|word/document)\.xml$")
 
 (def content-types
   {:pptx "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"
@@ -15,6 +17,8 @@
    :xlsx "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
    :rels "application/vnd.openxmlformats-package.relationships+xml"
    :xml "application/xml"})
+
+(declare package-kind)
 
 (defn xml-esc [s]
   (-> (str s)
@@ -27,9 +31,28 @@
   ([entries] (package entries {}))
   ([entries opts]
    {:ooxml/entries (into (sorted-map) entries)
-    :ooxml/kind (or (:kind opts) (some (fn [[prefix kind]]
-                                         (when (some #(str/starts-with? % prefix) (keys entries)) kind))
-                                       [["ppt/" :pptx] ["word/" :docx] ["xl/" :xlsx]]))}))
+    :ooxml/kind (or (:kind opts) (package-kind entries))}))
+
+(defn package-kind [entries]
+  (cond
+    (some #(str/starts-with? % "ppt/") (keys entries)) :pptx
+    (some #(str/starts-with? % "xl/") (keys entries)) :xlsx
+    (some #(str/starts-with? % "word/") (keys entries)) :docx
+    :else :opc))
+
+(defn part-sort-key [path]
+  (if-let [[_ prefix n] (re-matches #"^(ppt/slides/slide|xl/worksheets/sheet)(\d+)\.xml$" path)]
+    [prefix (count n) n]
+    [path 0]))
+
+(defn office-part? [path]
+  (boolean (re-matches office-part-pattern (str path))))
+
+(defn office-parts [entries]
+  (->> entries
+       (filter (fn [[path _]] (office-part? path)))
+       (sort-by (comp part-sort-key key))
+       vec))
 
 (defn entries [pkg] (:ooxml/entries pkg))
 (defn kind [pkg] (:ooxml/kind pkg))
@@ -78,6 +101,38 @@
        "<Types xmlns=\"" content-types-ns "\">"
        (apply str (map content-type-xml items))
        "</Types>"))
+
+(defn attr-present? [xml k v]
+  (boolean
+   (re-find (re-pattern (str "\\b" k "=(['\"])" #?(:clj (java.util.regex.Pattern/quote v)
+                                                   :cljs v) "\\1"))
+            (or xml ""))))
+
+(defn ensure-content-type-extension [xml extension content-type]
+  (let [entry (content-type-xml (default-content-type extension content-type))]
+    (cond
+      (str/blank? (or xml ""))
+      (content-types-xml [(default-content-type extension content-type)])
+
+      (attr-present? xml "Extension" extension) xml
+      (re-find #"<Types\b([^>]*)/>" (or xml ""))
+      (str/replace xml #"<Types\b([^>]*)/>" (str "<Types$1>" entry "</Types>"))
+      (str/includes? (or xml "") "</Types>")
+      (str/replace xml #"</Types>\s*$" (str entry "</Types>"))
+      :else xml)))
+
+(defn ensure-root-relationship [xml rel]
+  (let [entry (relationship-xml rel)]
+    (cond
+      (str/blank? (or xml ""))
+      (relationships-xml [rel])
+
+      (attr-present? xml "Id" (:id rel)) xml
+      (re-find #"<Relationships\b([^>]*)/>" (or xml ""))
+      (str/replace xml #"<Relationships\b([^>]*)/>" (str "<Relationships$1>" entry "</Relationships>"))
+      (str/includes? (or xml "") "</Relationships>")
+      (str/replace xml #"</Relationships>\s*$" (str entry "</Relationships>"))
+      :else xml)))
 
 (defn ensure-entry [pkg path value]
   (assoc-in pkg [:ooxml/entries path] value))
